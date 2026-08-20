@@ -1,0 +1,3 @@
+# secrets and container state - never committed
+registry/.env
+registry/db-data/

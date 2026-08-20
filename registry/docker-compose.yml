@@ -1,0 +1,137 @@
+# OAN Registry - local dev stack.
+# Registry (Sunbird RC core) + its dependencies only: postgres, keycloak, elasticsearch.
+# ONIX is not part of this stack yet; it will be added as a sibling compose under network-layer/.
+#
+# No credentials in this file. Everything secret comes from .env (see .env.example).
+# Vars written as ${VAR:?...} are required - compose refuses to start without them.
+
+services:
+  db:
+    image: postgres:14
+    volumes:
+      - ./${DB_DIR-db-data}:/var/lib/postgresql/data
+    ports:
+      - '${DB_HOST_PORT-5432}:5432'
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB-registry}
+      - POSTGRES_USER=${POSTGRES_USER-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER-postgres}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.13
+    # named volume, not a bind mount: without it the search index is lost on every
+    # `docker compose down`, and /search then returns nothing for records postgres
+    # still holds - the registry does not reindex on start
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - 'ES_JAVA_OPTS=-Xms512m -Xmx512m'
+      - xpack.security.enabled=${ELASTIC_SECURITY_ENABLED-false}
+      - ELASTIC_PASSWORD=${ELASTIC_SEARCH_PASSWORD-}
+    ports:
+      - '${ES_HOST_PORT-9200}:9200'
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:9200/_cluster/health || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+  keycloak:
+    image: ghcr.io/sunbird-rc/sunbird-rc-keycloak:latest
+    volumes:
+      - ./imports:/opt/jboss/keycloak/imports
+    environment:
+      - DB_VENDOR=postgres
+      - DB_ADDR=db
+      - DB_PORT=5432
+      - DB_DATABASE=${POSTGRES_DB-registry}
+      - DB_USER=${POSTGRES_USER-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - KEYCLOAK_USER=${KEYCLOAK_ADMIN_USER-admin}
+      - KEYCLOAK_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD in .env}
+      - KEYCLOAK_IMPORT=/opt/jboss/keycloak/imports/realm-export.json
+      # lets a host-side caller ask for a token whose `iss` matches the registry's
+      # internal expectation, via X-Forwarded-Host / X-Forwarded-Proto headers
+      - PROXY_ADDRESS_FORWARDING=true
+    ports:
+      - '${KEYCLOAK_HOST_PORT-8080}:8080'
+      - '${KEYCLOAK_ADMIN_HOST_PORT-9990}:9990'
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:9990/ || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+  registry:
+    image: ghcr.io/sunbird-rc/sunbird-rc-core:${RELEASE_VERSION-v2.0.0}
+    volumes:
+      - ./${SCHEMA_DIR-schemas}:/home/sunbirdrc/config/public/_schemas
+    environment:
+      - connectionInfo_uri=jdbc:postgresql://db:5432/${POSTGRES_DB-registry}
+      - connectionInfo_username=${POSTGRES_USER-postgres}
+      - connectionInfo_password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # search goes through elasticsearch so the `contains` / `eq` filters in the
+      # API specification behave as documented
+      - search_providerName=${SEARCH_PROVIDER_NAME-dev.sunbirdrc.registry.service.ElasticSearchService}
+      - elastic_search_connection_url=es:9200
+      - elastic_search_scheme=http
+      - elastic_search_auth_enabled=${ELASTIC_SECURITY_ENABLED-false}
+      - elastic_search_username=${ELASTIC_SEARCH_USERNAME-elastic}
+      - elastic_search_password=${ELASTIC_SEARCH_PASSWORD-}
+      # keycloak / auth - role checks on Participant only apply while this is true
+      - authentication_enabled=${AUTHENTICATION_ENABLED-true}
+      - sunbird_sso_realm=${KEYCLOAK_REALM-sunbird-rc}
+      - sunbird_sso_url=http://keycloak:8080/auth
+      - OAUTH2_RESOURCES_0_URI=http://keycloak:8080/auth/realms/${KEYCLOAK_REALM-sunbird-rc}
+      - OAUTH2_RESOURCES_0_PROPERTIES_ROLES_PATH=realm_access.roles
+      - identity_provider=dev.sunbirdrc.auth.keycloak.KeycloakProviderImpl
+      - sunbird_sso_admin_client_id=${KEYCLOAK_ADMIN_CLIENT_ID-admin-api}
+      - sunbird_sso_client_id=${KEYCLOAK_CLIENT_ID-registry-frontend}
+      - sunbird_sso_admin_client_secret=${KEYCLOAK_SECRET:?set KEYCLOAK_SECRET in .env - regenerate it on the admin-api client in the Keycloak console}
+      - sunbird_keycloak_user_set_password=true
+      - sunbird_keycloak_user_password=${REGISTRY_DEFAULT_USER_PASSWORD:?set REGISTRY_DEFAULT_USER_PASSWORD in .env}
+      # everything the registry can optionally talk to is off: this stack is
+      # participant records and lookup only, no credentials / DIDs / certificates
+      - encryption_enabled=false
+      - event_enabled=false
+      - idgen_enabled=false
+      - claims_enabled=false
+      - did_enabled=false
+      - signature_enabled=false
+      - certificate_enabled=false
+      - filestorage_enabled=false
+      - notification_enabled=false
+      - notification_async_enabled=false
+      - async_enabled=false
+      - webhook_enabled=false
+      - registry_base_apis_enable=false
+      - manager_type=DefinitionsManager
+      - expand_reference=false
+      - swagger_title=OAN Registry
+      - logging.level.root=INFO
+    ports:
+      - '${REGISTRY_HOST_PORT-8081}:8081'
+    depends_on:
+      db:
+        condition: service_healthy
+      es:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -nv -t1 --spider http://localhost:8081/health || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+volumes:
+  esdata:

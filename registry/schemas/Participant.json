@@ -1,0 +1,170 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "type": "object",
+  "properties": {
+    "Participant": {
+      "$ref": "#/definitions/Participant"
+    }
+  },
+  "required": [
+    "Participant"
+  ],
+  "title": "Participant",
+  "definitions": {
+    "Participant": {
+      "$id": "#/properties/Participant",
+      "type": "object",
+      "title": "OAN network participant",
+      "comment": "Flat by design: nested objects would each become their own graph node with their own osid. Every field here is a scalar or an array of scalars, so one participant is one record with one osid.",
+      "required": [
+        "participant_id",
+        "display_name",
+        "roles",
+        "status",
+        "record_version",
+        "updated_at",
+        "signing_public_key",
+        "endpoint_url",
+        "domain"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "participant_id": {
+          "type": "string",
+          "title": "Business identifier of the participant, unique across the network"
+        },
+        "display_name": {
+          "type": "string",
+          "title": "Human-readable name of the participant"
+        },
+        "roles": {
+          "type": "array",
+          "title": "Roles this participant holds on the network",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "network_operator",
+              "provider",
+              "consumer"
+            ]
+          }
+        },
+        "status": {
+          "type": "string",
+          "title": "Lifecycle status of the participant",
+          "enum": [
+            "active",
+            "inactive"
+          ]
+        },
+        "domain": {
+          "type": "string",
+          "title": "Kind of participant, e.g. weather, market, credit, advisory"
+        },
+        "record_version": {
+          "type": "integer",
+          "title": "Version counter of this record, starts at 1",
+          "minimum": 1
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time",
+          "title": "ISO-8601 timestamp of the last update"
+        },
+        "endpoint_url": {
+          "type": "string",
+          "title": "Base URL where requests to this participant are sent once resolved"
+        },
+        "endpoint_type": {
+          "type": "string",
+          "title": "What this endpoint serves",
+          "enum": [
+            "onix",
+            "callback",
+            "api"
+          ]
+        },
+        "signing_public_key": {
+          "type": "string",
+          "title": "Base64-encoded public key a receiver uses to verify this participant's signed requests"
+        },
+        "signing_algorithm": {
+          "type": "string",
+          "title": "Algorithm of the signing key pair",
+          "enum": [
+            "ed25519"
+          ]
+        },
+        "key_valid_from": {
+          "type": "string",
+          "format": "date-time",
+          "title": "ISO-8601 timestamp from which the signing key is usable"
+        },
+        "key_valid_until": {
+          "type": "string",
+          "format": "date-time",
+          "title": "ISO-8601 timestamp after which the signing key must not be trusted"
+        },
+        "osid": {
+          "type": "string",
+          "title": "System id, assigned by the registry - accepted on update, never set by a client"
+        },
+        "osOwner": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "System field: keycloak subject(s) that own this record"
+        },
+        "osCreatedAt": {
+          "type": "string",
+          "title": "System field: creation timestamp"
+        },
+        "osUpdatedAt": {
+          "type": "string",
+          "title": "System field: last update timestamp"
+        },
+        "osCreatedBy": {
+          "type": "string",
+          "title": "System field: creator"
+        },
+        "osUpdatedBy": {
+          "type": "string",
+          "title": "System field: last updater"
+        },
+        "_status": {
+          "type": [
+            "boolean",
+            "string",
+            "null"
+          ],
+          "title": "System field: storage-level soft-delete flag"
+        }
+      }
+    }
+  },
+  "_osConfig": {
+    "systemFields": [
+      "osCreatedAt",
+      "osUpdatedAt",
+      "osCreatedBy",
+      "osUpdatedBy"
+    ],
+    "uniqueIndexFields": [
+      "participant_id"
+    ],
+    "indexFields": [
+      "status",
+      "domain"
+    ],
+    "roles": [
+      "admin",
+      "network_operator"
+    ],
+    "inviteRoles": [
+      "admin",
+      "network_operator"
+    ]
+  }
+}

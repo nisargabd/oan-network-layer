@@ -1,0 +1,1280 @@
+{
+  "info": {
+    "name": "OAN Registry - local",
+    "description": "End-to-end tests for the OAN Registry running from network-layer/registry/docker-compose.yml.\n\nRun the whole collection top to bottom (Postman Runner or newman) - requests share state through collection variables: the first request stamps a run_id, the token request stores the bearer, and the create requests store osids.\n\nEvery request has assertions, and the run cleans up after itself.\n\nVerified against sunbird-rc-core v2.0.0 with authentication_enabled=true and the elasticsearch search provider. Where real behaviour differs from API_SPECIFICATION.md, the request description says so.\n\nCookies are disabled for every request in this collection. The registry issues a JSESSIONID on the first token-authenticated call, and that session cookie is accepted afterwards INSTEAD of a bearer token - so any client with a cookie jar (Postman, newman, a browser) stays authenticated and the no-token tests below would wrongly pass. Real API clients such as ONIX do not keep cookies, so disabling them is also the honest test.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "registry_url",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "es_url",
+      "value": "http://localhost:9200"
+    },
+    {
+      "key": "realm",
+      "value": "sunbird-rc"
+    },
+    {
+      "key": "client_id",
+      "value": "registry-frontend"
+    },
+    {
+      "key": "no_user",
+      "value": "no-user"
+    },
+    {
+      "key": "no_password",
+      "value": "no-user-password"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "run_id",
+      "value": ""
+    },
+    {
+      "key": "provider_osid",
+      "value": ""
+    },
+    {
+      "key": "no_osid",
+      "value": ""
+    },
+    {
+      "key": "invited_osid",
+      "value": ""
+    },
+    {
+      "key": "bad_issuer_token",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{registry_url}}/health",
+        "description": "Confirms the registry is up and that its elasticsearch and keycloak checks pass.\n\nAlso stamps a run_id used by every later request, so the collection can be re-run without colliding on participant_id (a deleted record's row physically remains, so re-using an id returns 500)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json().result;",
+              "pm.test('registry healthy', () => pm.expect(r.healthy).to.be.true);",
+              "pm.test('elasticsearch healthy', () => pm.expect(r.checks.find(c => c.name.includes('elastic')).healthy).to.be.true);",
+              "pm.test('keycloak healthy', () => pm.expect(r.checks.find(c => c.name.includes('keycloak')).healthy).to.be.true);",
+              "pm.collectionVariables.set('run_id', Date.now());"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Participant API surface (swagger)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{registry_url}}/api/docs/swagger.json",
+        "description": "Lists the endpoints the registry generated from schemas/Participant.json. Proves the schema was loaded at boot."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const paths = Object.keys(pm.response.json().paths);",
+              "pm.test('Participant endpoints exist', () => {",
+              "  pm.expect(paths).to.include('/api/v1/Participant');",
+              "  pm.expect(paths).to.include('/api/v1/Participant/search');",
+              "  pm.expect(paths).to.include('/api/v1/Participant/{entityId}');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Get Network Operator token",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          },
+          {
+            "key": "X-Forwarded-Host",
+            "value": "keycloak:8080"
+          },
+          {
+            "key": "X-Forwarded-Proto",
+            "value": "http"
+          }
+        ],
+        "url": "{{keycloak_url}}/auth/realms/{{realm}}/protocol/openid-connect/token",
+        "description": "The X-Forwarded-* headers are required when calling Keycloak from the host: without them the token's `iss` is http://localhost:8080/... which does not match what the registry expects internally (http://keycloak:8080/auth/realms/sunbird-rc), and every write comes back 401.",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "client_id",
+              "value": "{{client_id}}",
+              "type": "text"
+            },
+            {
+              "key": "username",
+              "value": "{{no_user}}",
+              "type": "text"
+            },
+            {
+              "key": "password",
+              "value": "{{no_password}}",
+              "type": "text"
+            },
+            {
+              "key": "grant_type",
+              "value": "password",
+              "type": "text"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('token', b.access_token);",
+              "const claims = JSON.parse(atob(b.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));",
+              "pm.test('token carries network_operator role', () => pm.expect(claims.realm_access.roles).to.include('network_operator'));",
+              "pm.test('issuer matches what the registry expects', () => pm.expect(claims.iss).to.eql('http://keycloak:8080/auth/realms/sunbird-rc'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Create the Network Operator's own record",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant",
+        "description": "The Network Operator is a Participant too, so it can be resolved like anyone else.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"no-{{run_id}}\",\n  \"display_name\": \"OAN Network Operator\",\n  \"roles\": [\n    \"network_operator\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"network\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpoint_url\": \"https://no.example.com/onix\",\n  \"endpoint_type\": \"onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\",\n  \"key_valid_from\": \"2026-08-19T00:00:00Z\",\n  \"key_valid_until\": \"2027-08-19T00:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('SUCCESSFUL', () => pm.expect(b.params.status).to.eql('SUCCESSFUL'));",
+              "pm.collectionVariables.set('no_osid', b.result.Participant.osid);"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Create a Provider",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant",
+        "description": "Only a token holding `admin` or `network_operator` can write to Participant - that is the `roles` list in the schema's _osConfig. There is no self-registration path.\n\nSaves the returned osid as {{provider_osid}} for every later request.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"provider-{{run_id}}\",\n  \"display_name\": \"Provider A Agri Services\",\n  \"roles\": [\n    \"provider\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpoint_url\": \"https://providera.example.com/onix\",\n  \"endpoint_type\": \"onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\",\n  \"key_valid_from\": \"2026-08-19T00:00:00Z\",\n  \"key_valid_until\": \"2027-08-19T00:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('SUCCESSFUL', () => pm.expect(b.params.status).to.eql('SUCCESSFUL'));",
+              "pm.test('returns an osid', () => pm.expect(b.result.Participant.osid).to.be.a('string'));",
+              "pm.collectionVariables.set('provider_osid', b.result.Participant.osid);"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Force elasticsearch refresh (dev only)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{es_url}}/_refresh",
+        "description": "Dev-only. /search is served by elasticsearch, which refreshes about once a second, so a search fired immediately after a write can read stale data. This forces the refresh so the searches below are deterministic. Not something a real client would call."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Search - one Provider by participant_id",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/search",
+        "description": "This endpoint is public - it is allow-listed in the registry's security config, so no token is needed. Do not send an empty `Authorization: Bearer` header: Spring's OAuth2 filter rejects it with 401 before the permit rule is reached.\n\nThe response is an object - `{ data: [...], totalCount: n }` - not a bare array. `totalCount` reads 0 with the elasticsearch provider; use `data.length`.\n\nRecords come back complete, including `endpoints` and `keys`, which is what makes this the resolve call ONIX will use.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"filters\": {\n    \"participant_id\": {\n      \"eq\": \"provider-{{run_id}}\"\n    }\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const d = pm.response.json().data;",
+              "pm.test('exactly one match', () => pm.expect(d.length).to.eql(1));",
+              "pm.test('active', () => pm.expect(d[0].status).to.eql('active'));",
+              "pm.test('key material is returned', () => pm.expect(d[0].signing_public_key).to.be.a('string'));",
+              "pm.test('endpoint is returned', () => pm.expect(d[0].endpoint_url).to.be.a('string'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Search - all active Providers",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/search",
+        "description": "Filters combine with AND.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"filters\": {\n    \"roles\": {\n      \"contains\": \"provider\"\n    },\n    \"status\": {\n      \"eq\": \"active\"\n    }\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const d = pm.response.json().data;",
+              "pm.test('includes this run\\'s provider', () => pm.expect(d.map(r => r.participant_id)).to.include('provider-' + pm.collectionVariables.get('run_id')));",
+              "pm.test('all returned are active providers', () => d.forEach(r => { pm.expect(r.status).to.eql('active'); pm.expect(r.roles).to.include('provider'); }));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Search - active Providers in one domain",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/search",
+        "description": "Domain-scoped discovery: which Providers serve weather.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"filters\": {\n    \"roles\": {\n      \"contains\": \"provider\"\n    },\n    \"domain\": {\n      \"eq\": \"weather\"\n    },\n    \"status\": {\n      \"eq\": \"active\"\n    }\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const d = pm.response.json().data;",
+              "pm.test('includes this run\\'s provider', () => pm.expect(d.map(r => r.participant_id)).to.include('provider-' + pm.collectionVariables.get('run_id')));",
+              "pm.test('all in the weather domain', () => d.forEach(r => pm.expect(r.domain).to.eql('weather')));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Search - all inactive Providers (none yet)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/search",
+        "description": "Nothing has been suspended yet, so this run's provider must not appear. An empty result is 200 with `data: []`, never a 404.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"filters\": {\n    \"roles\": {\n      \"contains\": \"provider\"\n    },\n    \"status\": {\n      \"eq\": \"inactive\"\n    }\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const d = pm.response.json().data;",
+              "pm.test('this run\\'s provider is not here yet', () => pm.expect(d.map(r => r.participant_id)).to.not.include('provider-' + pm.collectionVariables.get('run_id')));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Search - no match returns an empty list",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/search",
+        "description": "Confirms a miss is an empty list and not an error.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"filters\": {\n    \"participant_id\": {\n      \"eq\": \"does-not-exist-{{run_id}}\"\n    }\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('empty', () => pm.expect(pm.response.json().data.length).to.eql(0));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Get a Participant by osid",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/{{provider_osid}}",
+        "description": "Reads straight from postgres, so it is immediately consistent - unlike /search, which goes through elasticsearch. A token is required here even though /search is public."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('right record', () => pm.expect(b.participant_id).to.eql('provider-' + pm.collectionVariables.get('run_id')));",
+              "pm.test('active', () => pm.expect(b.status).to.eql('active'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "List Participants created by this token",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant",
+        "description": "Returns the records owned by the caller - the creator is stored as osOwner. Since the Network Operator created both records in this run, both come back."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('at least the two records from this run', () => pm.expect(b.data.length).to.be.at.least(2));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Suspend a Provider (PUT, partial - merge)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/{{provider_osid}}",
+        "description": "PUT is a field-level MERGE, not a full replace - verified against this deployment. Fields present in the body are overwritten, fields omitted keep their stored value, and validation runs on the merged document (so omitting a required field is fine). Arrays are replaced wholesale, not appended to, and a field can only be cleared by sending it explicitly.\n\nThis request therefore sends only what changes - osid, status, record_version, updated_at - and the assertions below prove the untouched fields survived. Note the API specification calls PUT a full replace; that is not what the running registry does.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"osid\": \"{{provider_osid}}\",\n  \"status\": \"inactive\",\n  \"record_version\": 2,\n  \"updated_at\": \"2026-08-19T12:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('SUCCESSFUL', () => pm.expect(pm.response.json().params.status).to.eql('SUCCESSFUL'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Confirm the suspension (get by osid)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/{{provider_osid}}",
+        "description": "Checked via GET rather than /search because this read is immediately consistent."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('inactive', () => pm.expect(b.status).to.eql('inactive'));",
+              "pm.test('version bumped', () => pm.expect(b.record_version).to.eql(2));",
+              "pm.test('endpoint survived the partial update', () => pm.expect(b.endpoint_url).to.be.a('string'));",
+              "pm.test('signing key survived the partial update', () => pm.expect(b.signing_public_key).to.be.a('string'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Force elasticsearch refresh (dev only)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{es_url}}/_refresh",
+        "description": "Dev-only. /search is served by elasticsearch, which refreshes about once a second, so a search fired immediately after a write can read stale data. This forces the refresh so the searches below are deterministic. Not something a real client would call."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Search - inactive Providers now finds it",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/search",
+        "description": "The suspended Provider is now visible as inactive - a suspended participant is still resolvable, just not active.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"filters\": {\n    \"roles\": {\n      \"contains\": \"provider\"\n    },\n    \"status\": {\n      \"eq\": \"inactive\"\n    }\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const d = pm.response.json().data;",
+              "pm.test('this run\\'s provider is now inactive', () => pm.expect(d.map(r => r.participant_id)).to.include('provider-' + pm.collectionVariables.get('run_id')));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reactivate the Provider (PUT, full body)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/{{provider_osid}}",
+        "description": "Same endpoint, this time sending the whole record - allowed, and how you would rewrite several fields at once. Sending the full body is never wrong, it is just not required: see the suspend request for the merge behaviour.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"osid\": \"{{provider_osid}}\",\n  \"participant_id\": \"provider-{{run_id}}\",\n  \"display_name\": \"Provider A Agri Services\",\n  \"roles\": [\n    \"provider\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 3,\n  \"updated_at\": \"2026-08-19T13:00:00Z\",\n  \"endpoint_url\": \"https://providera.example.com/onix\",\n  \"endpoint_type\": \"onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\",\n  \"key_valid_from\": \"2026-08-19T00:00:00Z\",\n  \"key_valid_until\": \"2027-08-19T00:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('SUCCESSFUL', () => pm.expect(pm.response.json().params.status).to.eql('SUCCESSFUL'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Confirm reactivation (get by osid)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/{{provider_osid}}",
+        "description": ""
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('active again', () => pm.expect(pm.response.json().status).to.eql('active'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Invite a Participant (works, but redundant here)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/invite",
+        "description": "Invite is the self-registration door: it creates a record and, when the schema has ownershipAttributes, a matching Keycloak user. This schema deliberately has none, and inviteRoles excludes `anonymous`, so invite needs the same token as a plain POST and does nothing extra. Use POST /api/v1/Participant instead.\n\nIncluded so the endpoint's behaviour is on record. The invited record is deleted at the end of the run.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"invited-{{run_id}}\",\n  \"display_name\": \"Invited Participant\",\n  \"roles\": [\n    \"provider\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpoint_url\": \"https://providera.example.com/onix\",\n  \"endpoint_type\": \"onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\",\n  \"key_valid_from\": \"2026-08-19T00:00:00Z\",\n  \"key_valid_until\": \"2027-08-19T00:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('SUCCESSFUL', () => pm.expect(b.params.status).to.eql('SUCCESSFUL'));",
+              "pm.collectionVariables.set('invited_osid', b.result.Participant.osid);"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reject - create without a token",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant",
+        "description": "Writes need a token. This is what closes the self-registration path.\n\nThis only returns 401 with cookies disabled. With a cookie jar, the JSESSIONID picked up from the earlier authenticated create authenticates this request and it returns 200 - verified against this deployment, including DELETE. Treat JSESSIONID as equivalent to a bearer token.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"unauth-{{run_id}}\",\n  \"display_name\": \"No Token\",\n  \"roles\": [\n    \"provider\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpoint_url\": \"https://providera.example.com/onix\",\n  \"endpoint_type\": \"onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\",\n  \"key_valid_from\": \"2026-08-19T00:00:00Z\",\n  \"key_valid_until\": \"2027-08-19T00:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reject - create with a Keycloak token issued to the wrong audience/issuer",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bad_issuer_token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant",
+        "description": "Uses a token fetched WITHOUT the X-Forwarded-* headers, so its `iss` is http://localhost:8080/... instead of http://keycloak:8080/... . This is the single most common local setup failure, so it is worth seeing on purpose.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"badiss-{{run_id}}\",\n  \"display_name\": \"Bad Issuer\",\n  \"roles\": [\n    \"provider\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpoint_url\": \"https://providera.example.com/onix\",\n  \"endpoint_type\": \"onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\",\n  \"key_valid_from\": \"2026-08-19T00:00:00Z\",\n  \"key_valid_until\": \"2027-08-19T00:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.sendRequest({",
+              "  url: pm.collectionVariables.get('keycloak_url') + '/auth/realms/' + pm.collectionVariables.get('realm') + '/protocol/openid-connect/token',",
+              "  method: 'POST',",
+              "  header: {'Content-Type': 'application/x-www-form-urlencoded'},",
+              "  body: {mode: 'urlencoded', urlencoded: [",
+              "    {key: 'client_id', value: pm.collectionVariables.get('client_id')},",
+              "    {key: 'username', value: pm.collectionVariables.get('no_user')},",
+              "    {key: 'password', value: pm.collectionVariables.get('no_password')},",
+              "    {key: 'grant_type', value: 'password'}",
+              "  ]}",
+              "}, (err, res) => pm.collectionVariables.set('bad_issuer_token', err ? 'broken' : res.json().access_token));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reject - missing a required field",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant",
+        "description": "display_name is in the schema's `required` list.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"missing-{{run_id}}\",\n  \"roles\": [\n    \"provider\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpoint_url\": \"https://missing.example.com/onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400', () => pm.response.to.have.status(400));",
+              "pm.test('names the missing field', () => pm.expect(pm.response.json().params.errmsg).to.include('display_name'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reject - value outside the schema's enum",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant",
+        "description": "roles is constrained to network_operator / provider / consumer, status to active / inactive.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"badenum-{{run_id}}\",\n  \"display_name\": \"Bad Role\",\n  \"roles\": [\n    \"banana\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpoint_url\": \"https://providera.example.com/onix\",\n  \"endpoint_type\": \"onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\",\n  \"key_valid_from\": \"2026-08-19T00:00:00Z\",\n  \"key_valid_until\": \"2027-08-19T00:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400', () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reject - an undeclared field (typo)",
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"typo-{{run_id}}\",\n  \"display_name\": \"Typo Test\",\n  \"roles\": [\n    \"provider\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpointurl\": \"https://typo.example.com/onix\",\n  \"endpoint_url\": \"https://providera.example.com/onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\"\n}"
+        },
+        "description": "The schema sets `additionalProperties: false`, so a field that is not declared is rejected instead of silently stored. Without it, `endpointurl` would persist as its own column and the record would resolve with no endpoint - a silent failure for anything relying on the registry for endpoints or key material.\n\nThe registry's own system fields (osid, osOwner, osCreatedAt, osUpdatedAt, osCreatedBy, osUpdatedBy, _status) are declared in the schema for this reason: PUT validates the MERGED document, which carries them, so leaving them undeclared makes every update fail with `extraneous key [osUpdatedAt] is not permitted`."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400', () => pm.response.to.have.status(400));",
+              "pm.test('names the offending key', () => pm.expect(pm.response.json().params.errmsg).to.include('endpointurl'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reject - duplicate participant_id (returns 500, not 400)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant",
+        "description": "participant_id is in uniqueIndexFields, so postgres rejects the second insert. The registry surfaces that as a 500 with a `duplicate key value violates unique constraint` message, not a clean 400 - worth knowing before you build error handling on top of it.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"provider-{{run_id}}\",\n  \"display_name\": \"Duplicate\",\n  \"roles\": [\n    \"provider\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpoint_url\": \"https://providera.example.com/onix\",\n  \"endpoint_type\": \"onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\",\n  \"key_valid_from\": \"2026-08-19T00:00:00Z\",\n  \"key_valid_until\": \"2027-08-19T00:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('500', () => pm.response.to.have.status(500));",
+              "pm.test('duplicate key error', () => pm.expect(pm.response.json().params.errmsg).to.include('duplicate key'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reject - search with an empty Authorization header",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/search",
+        "description": "/search needs no token, but an empty `Bearer` value still fails token parsing in Spring's OAuth2 filter before the permit rule applies. Either omit the header or send a real token - never send it empty.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"filters\": {\n    \"participant_id\": {\n      \"eq\": \"provider-{{run_id}}\"\n    }\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reject - get by osid without a token",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{registry_url}}/api/v1/Participant/{{provider_osid}}",
+        "description": "Reads by osid are not public, unlike /search."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reject - get an unknown osid",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/1-00000000-0000-0000-0000-000000000000",
+        "description": ""
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('404', () => pm.response.to.have.status(404));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Reject - invite without a token",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/invite",
+        "description": "inviteRoles is [admin, network_operator] with no `anonymous`, so there is no anonymous onboarding path either.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"participant_id\": \"anon-{{run_id}}\",\n  \"display_name\": \"Anonymous\",\n  \"roles\": [\n    \"provider\"\n  ],\n  \"status\": \"active\",\n  \"domain\": \"weather\",\n  \"record_version\": 1,\n  \"updated_at\": \"2026-08-19T10:00:00Z\",\n  \"endpoint_url\": \"https://providera.example.com/onix\",\n  \"endpoint_type\": \"onix\",\n  \"signing_public_key\": \"MCowBQYDK2VwAyEA3fS8bYhWEfmM7Zjk9x0EhAmvQKp3fMHXqTiA5xL1Qmw=\",\n  \"signing_algorithm\": \"ed25519\",\n  \"key_valid_from\": \"2026-08-19T00:00:00Z\",\n  \"key_valid_until\": \"2027-08-19T00:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Delete the Provider",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/{{provider_osid}}",
+        "description": "A soft delete at the storage layer: the record disappears from /search and GET immediately, and there is no API to bring it back. The row physically remains, so creating the same participant_id again returns 500 - which is why this collection stamps a fresh run_id per run."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('SUCCESSFUL', () => pm.expect(pm.response.json().params.status).to.eql('SUCCESSFUL'));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Confirm the delete (get by osid is now 404)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/{{provider_osid}}",
+        "description": ""
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('404', () => pm.response.to.have.status(404));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Force elasticsearch refresh (dev only)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{es_url}}/_refresh",
+        "description": "Dev-only. /search is served by elasticsearch, which refreshes about once a second, so a search fired immediately after a write can read stale data. This forces the refresh so the searches below are deterministic. Not something a real client would call."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Confirm the delete (search no longer returns it)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/search",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"filters\": {\n    \"participant_id\": {\n      \"eq\": \"provider-{{run_id}}\"\n    }\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('gone', () => pm.expect(pm.response.json().data.length).to.eql(0));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Clean up - delete the invited record",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/{{invited_osid}}",
+        "description": ""
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "Clean up - delete the Network Operator record",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{registry_url}}/api/v1/Participant/{{no_osid}}",
+        "description": "Leaves the registry as it was found, so the collection can be run again straight away."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    }
+  ],
+  "protocolProfileBehavior": {
+    "disableCookies": true
+  }
+}
