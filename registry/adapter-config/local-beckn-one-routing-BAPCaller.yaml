@@ -1,0 +1,31 @@
+# Outbound routing for the Experience-layer adapter's caller module.
+#
+# Every action is sent to the Network-layer adapter's receiver rather than
+# resolved to a BPP from the message. That is the point of this setup: the
+# network layer sits in the path, does its work, and then calls back into the
+# Experience adapter's receiver.
+#
+# Hostname is the compose service name -- these adapters talk to each other over
+# the compose network, where `network-adapter` resolves and `localhost` would be
+# the calling container itself.
+#
+# Port 8082 is what that adapter actually listens on, per its own config -- not
+# 8081, and not the host-published port. The two adapters listen on different
+# ports, so this is easy to get wrong.
+routingRules:
+  - domain: "beckn.one:deg:ev-charging:2.0.0"
+    version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://network-adapter:8082/bpp/receiver/"
+    endpoints:
+      - discover
+      - select
+      - init
+      - confirm
+      - status
+      - track
+      - cancel
+      - update
+      - rating
+      - support

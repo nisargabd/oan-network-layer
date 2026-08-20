@@ -1,0 +1,199 @@
+appName: "onix-local"
+log:
+  level: debug
+  destinations:
+    - type: stdout
+  contextKeys:
+    - transaction_id
+    - message_id
+    - subscriber_id
+    - module_id
+http:
+  port: 8081
+  timeout:
+    read: 30
+    write: 30
+    idle: 30
+pluginManager:
+  root: ./plugins
+
+# OpenTelemetry (OTLP) - metrics and traces sent to OTEL collector
+plugins:
+  otelsetup:
+    id: otelsetup
+    config:
+      serviceName: "beckn-one-bap"
+      serviceVersion: "1.0.0"
+      environment: "development"
+      domain: "ev_charging"
+      otlpEndpoint: "otel-collector-bap:4317"
+      enableMetrics: "true"
+      networkMetricsGranularity: "2min"
+      networkMetricsFrequency: "4min"
+      enableTracing: "true"
+      enableLogs: "true"
+      timeInterval: "5"
+      auditFieldsConfig: "/app/config/audit-fields.yaml" # this can be git url
+      cacheTTL: "3600"
+
+modules:
+  - name: bapTxnReceiver
+    path: /bap/receiver/
+    handler:
+      type: std
+      role: bap
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 5s
+      plugins:
+        registry:
+          id: oanregistry
+          config:
+            # Required. Unlike dediregistry, whose URL is injected from the
+            # signed beckn-constants.yaml, this plugin has no locked default --
+            # an empty url fails at startup. Must include the API version
+            # prefix; the plugin appends /{entity}/search.
+            #
+            # Service name, not localhost: the adapter resolves this from inside
+            # the compose network, where the registry is reachable as `registry`.
+            url: http://registry:8081/api/v1
+            # entity defaults to Participant. timeout is in seconds and is
+            # applied even when omitted, so a dead registry cannot hang the
+            # adapter. Worst case is timeout x (retry_max + 1) plus backoff.
+            timeout: 2
+            retry_max: 1
+            retry_wait_min: 100ms
+            retry_wait_max: 500ms
+            # cacheTTL is the window in which a suspended participant keeps
+            # verifying. Omitted means caching is off and a suspension takes
+            # effect on the very next request.
+        keyManager:
+          id: simplekeymanager
+          config:
+            subscriberId: bap.example.com
+            keyId: 1-e7217526-ecc5-4d29-9e47-f9f21f4e1138
+            signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            signingPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+            encrPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            encrPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+        cache:
+          id: cache
+          config:
+            addr: redis:6379
+        payloadStore:
+          id: payloadstore
+          config:
+            ttl: "24h"
+            indexTTL: "25h"
+            maxBodyBytes: "1048576"
+            storeBody: "true"
+            storeSignature: "true"
+            compress: "true"
+        schemaValidator:
+          id: schemav2validator
+          config:
+            cacheTTL: "3600"
+            extendedSchema_enabled: "false"
+            extendedSchema_cacheTTL: "86400"
+            extendedSchema_maxCacheSize: "100"
+            extendedSchema_downloadTimeout: "30"
+            extendedSchema_allowedDomains: "beckn.org,example.com,raw.githubusercontent.com"
+        signValidator:
+          id: signvalidator
+        signer:
+          id: signer
+        router:
+          id: router
+          config:
+            routingConfig: ./config/local-beckn-one-routing-BAPReceiver.yaml
+        middleware:
+          - id: reqpreprocessor
+            config:
+              contextKeys: transaction_id,message_id
+              role: bap
+      steps:
+        - validateSign
+        - validateSchema
+        - addRoute
+  
+  - name: bapTxnCaller
+    path: /bap/caller/
+    handler:
+      type: std
+      role: bap
+      subscriberId: bap.example.com
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 5s
+      plugins:
+        registry:
+          id: oanregistry
+          config:
+            # Required. Unlike dediregistry, whose URL is injected from the
+            # signed beckn-constants.yaml, this plugin has no locked default --
+            # an empty url fails at startup. Must include the API version
+            # prefix; the plugin appends /{entity}/search.
+            #
+            # Service name, not localhost: the adapter resolves this from inside
+            # the compose network, where the registry is reachable as `registry`.
+            url: http://registry:8081/api/v1
+            # entity defaults to Participant. timeout is in seconds and is
+            # applied even when omitted, so a dead registry cannot hang the
+            # adapter. Worst case is timeout x (retry_max + 1) plus backoff.
+            timeout: 2
+            retry_max: 1
+            retry_wait_min: 100ms
+            retry_wait_max: 500ms
+            # cacheTTL is the window in which a suspended participant keeps
+            # verifying. Omitted means caching is off and a suspension takes
+            # effect on the very next request.
+        keyManager:
+          id: simplekeymanager
+          config:
+            subscriberId: bap.example.com
+            keyId: 1-e7217526-ecc5-4d29-9e47-f9f21f4e1138
+            signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            signingPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+            encrPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            encrPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+        cache:
+          id: cache
+          config:
+            addr: redis:6379
+        payloadStore:
+          id: payloadstore
+          config:
+            ttl: "24h"
+            indexTTL: "25h"
+            maxBodyBytes: "1048576"
+            storeBody: "true"
+            storeSignature: "true"
+            compress: "true"
+        schemaValidator:
+          id: schemav2validator
+          config:
+            cacheTTL: "3600"
+            extendedSchema_enabled: "false"
+            extendedSchema_cacheTTL: "86400"
+            extendedSchema_maxCacheSize: "100"
+            extendedSchema_downloadTimeout: "30"
+            extendedSchema_allowedDomains: "beckn.org,example.com,raw.githubusercontent.com"
+        router:
+          id: router
+          config:
+            routingConfig: ./config/local-beckn-one-routing-BAPCaller.yaml
+        signer:
+          id: signer
+        middleware:
+          - id: reqpreprocessor
+            config:
+              contextKeys: transaction_id,message_id
+              role: bap
+      steps:
+        - addRoute
+        - sign
+        - validateSchema

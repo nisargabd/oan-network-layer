@@ -1,0 +1,25 @@
+# Outbound routing for the Network-layer adapter's caller module -- the return
+# leg. Once the network layer has done its work it calls back into the
+# Experience adapter's receiver with the on_* action.
+#
+# This was targetType "bap", which resolves the destination from the bap_uri
+# carried in the message. That is the protocol-correct behaviour and is what a
+# real deployment should use; it is pinned to a fixed URL here so the local loop
+# works without every test message having to carry a correct bap_uri.
+routingRules:
+  - domain: "beckn.one:deg:ev-charging:2.0.0"
+    version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://experience-adapter:8081/bap/receiver/"
+    endpoints:
+      - on_discover
+      - on_select
+      - on_init
+      - on_confirm
+      - on_status
+      - on_track
+      - on_cancel
+      - on_update
+      - on_rating
+      - on_support

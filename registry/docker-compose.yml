@@ -1,6 +1,8 @@
 # OAN Registry - local dev stack.
-# Registry (Sunbird RC core) + its dependencies only: postgres, keycloak, elasticsearch.
-# ONIX is not part of this stack yet; it will be added as a sibling compose under network-layer/.
+# Registry (Sunbird RC core) + its dependencies: postgres, keycloak, elasticsearch,
+# plus the protocol adapters for the Experience and Network layers.
+#
+# The Provider-layer adapter is deliberately not here yet.
 #
 # No credentials in this file. Everything secret comes from .env (see .env.example).
 # Vars written as ${VAR:?...} are required - compose refuses to start without them.
@@ -132,6 +134,79 @@ services:
       interval: 30s
       timeout: 10s
       retries: 10
+
+  # Cache backing the adapters' cache plugin. Both beckn-one configs declare
+  # `cache: redis` at redis:6379, and the adapter treats a failed cache
+  # connection as fatal at startup -- so this is a hard dependency, not an
+  # optimisation.
+  #
+  # No volume: nothing here needs to survive a restart.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '${REDIS_HOST_PORT-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- protocol adapters ------------------------------------------------------
+  #
+  # Two of the three layers for now: Experience and Network Exchange. The
+  # Provider-layer adapter is added later.
+  #
+  # Both load the oanregistry plugin and resolve counterparty public keys from
+  # the registry above, so both wait for it to be healthy. Neither holds a key
+  # this stack manages: a private signing key belongs to the adapter's own
+  # keymanager config and never comes from the registry.
+  #
+  # Adapter configs live in ./adapter-config so this stack is self-contained --
+  # clone it and everything needed is here. They originate from beckn-onix's
+  # config/ directory; if you change them there, copy them across.
+  #
+  # Published image, so this stack needs nothing from the beckn-onix checkout:
+  #   docker.io/ameersohel/oan-network-adapter
+  #
+  # `latest` moves. There is also a tag per source commit (e.g. :bf2a2bd) --
+  # pin ADAPTER_IMAGE to one of those if you need to know exactly what ran.
+  #
+  # Rebuilt from beckn-onix/Dockerfile.adapter-with-plugins, which compiles the
+  # plugins (including oanregistry.so) into the runtime image.
+  #
+  # The two adapters listen on different container ports -- 8081 for the
+  # Experience one, 8082 for the Network one -- set by each adapter's own
+  # config, not by anything here. The host ports differ again because the
+  # registry already holds 8081.
+
+  experience-adapter:
+    image: ${ADAPTER_IMAGE-ameersohel/oan-network-adapter:latest}
+    volumes:
+      - ${ADAPTER_CONFIG_DIR-./adapter-config}:/app/config:ro
+    environment:
+      - CONFIG_FILE=/app/config/${EXPERIENCE_ADAPTER_CONFIG-local-beckn-one-bap.yaml}
+    ports:
+      - '${EXPERIENCE_ADAPTER_HOST_PORT-8082}:8081'
+    depends_on:
+      registry:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  network-adapter:
+    image: ${ADAPTER_IMAGE-ameersohel/oan-network-adapter:latest}
+    volumes:
+      - ${ADAPTER_CONFIG_DIR-./adapter-config}:/app/config:ro
+    environment:
+      - CONFIG_FILE=/app/config/${NETWORK_ADAPTER_CONFIG-local-beckn-one-bpp.yaml}
+    ports:
+      - '${NETWORK_ADAPTER_HOST_PORT-8083}:8082'
+    depends_on:
+      registry:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 
 volumes:
   esdata:

@@ -1,0 +1,23 @@
+# Inbound routing for the Experience-layer adapter's receiver module -- the last
+# hop. Callbacks arriving from the network layer are forwarded to the public
+# endpoint that stands in for the Experience application.
+#
+# This is a public internet address, unlike every other target here, so it is the
+# one hop that leaves the compose network.
+routingRules:
+  - domain: "beckn.one:deg:ev-charging:2.0.0"
+    version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "https://test-endpoint.free.beeceptor.com"
+    endpoints:
+      - on_discover
+      - on_select
+      - on_init
+      - on_confirm
+      - on_status
+      - on_track
+      - on_cancel
+      - on_update
+      - on_rating
+      - on_support

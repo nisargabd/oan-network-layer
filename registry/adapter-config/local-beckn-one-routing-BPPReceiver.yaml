@@ -1,0 +1,33 @@
+# Inbound routing for the Network-layer adapter's receiver module.
+#
+# This is where a request lands after the Experience adapter's caller forwards
+# it and the signature has been verified. It is forwarded on to whatever does
+# the network layer's actual work.
+#
+# There is no such backend in this stack yet, so it points at the same public
+# endpoint as the Experience receiver -- enough to prove the request arrived
+# validated, but it does NOT close the loop: nothing here generates the on_*
+# callback, so the return leg (BPPCaller -> Experience receiver -> public
+# endpoint) will not fire on its own. Point this at a real service when one
+# exists.
+#
+# `discover` is included because the Experience caller now routes it here too;
+# it was absent from the previous rule, which only covered the transaction
+# actions.
+routingRules:
+  - domain: "beckn.one:deg:ev-charging:2.0.0"
+    version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "https://test-endpoint.free.beeceptor.com"
+    endpoints:
+      - discover
+      - select
+      - init
+      - confirm
+      - status
+      - track
+      - cancel
+      - update
+      - rating
+      - support

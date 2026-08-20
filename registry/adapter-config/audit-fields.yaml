@@ -1,0 +1,97 @@
+# Audit logging configuration for ONIX.
+#
+# mode: full       — emit the entire payload; apply PII masking where configured.
+# mode: selective  — emit only the fields listed under selectedFields, then mask PII.
+#
+# The two-stage pipeline runs in a single pass over the payload:
+#   1. Key-name masking  (maskRules)   — checked first, O(1) per field
+#   2. Path-override masking           — for fields needing path-level precision
+#   3. Field selection / dropping      — only active in selective mode
+#
+mode: full
+
+# Named masking patterns — define HOW a value is masked.
+# Referenced by name from maskRules and pathOverrides.
+patterns:
+  email:
+    maskType: replace
+    mask: "***@***.***"
+  phone:
+    maskType: last4
+  sensitive:
+    maskType: replace
+    mask: "[REDACTED]"
+  account:
+    maskType: last4
+
+# maskRules — driven by field name, not payload path.
+# A field is masked wherever it appears in the payload, regardless of nesting depth.
+# This makes rules portable across Beckn domains, actions, and schema versions.
+maskRules:
+  - keys: [email, emailAddress, supportEmail, providerEmail]
+    pattern: email
+
+  - keys: [phone, telephone, mobile, supportPhone, providerPhone]
+    pattern: phone
+
+  - keys: [displayName, fullName, accountHolderName]
+    pattern: sensitive
+
+  - keys: [accountNumber, vpa]
+    pattern: account
+
+  - keys: [paymentURL, txnRef, paidAt]
+    pattern: sensitive
+
+# captureSignatureHeaders — when true, the HTTP Authorization and X-Request-Id
+# headers are captured verbatim as attributes on every audit log record.
+# These carry the Beckn Ed25519 signature and are intentionally verifiable —
+# no masking is applied. Defaults to false.
+captureSignatureHeaders: false
+
+# pathOverrides — use sparingly.
+# These bind masking to a specific dot-path and are harder to maintain as schemas
+# evolve. Prefer maskRules (key-name matching) wherever possible.
+pathOverrides: []
+
+# selectedFields — only applied when mode: selective.
+# Lists the dot-paths to include in the audit log per action.
+# "default" is the fallback for any action not explicitly listed.
+# Field names use camelCase to match the current Beckn payload schema.
+selectedFields:
+  default:
+    - context.transactionId
+    - context.messageId
+    - context.action
+    - context.domain
+    - context.bapId
+    - context.bppId
+
+  confirm:
+    - context.transactionId
+    - context.messageId
+    - context.action
+    - context.domain
+    - context.bapId
+    - context.bppId
+    - message.order.id
+    - message.order.status
+    - message.order.payment.status
+
+  init:
+    - context.transactionId
+    - context.messageId
+    - context.action
+    - context.domain
+    - context.bapId
+    - context.bppId
+    - message.order.id
+    - message.order.value
+
+  update:
+    - context.transactionId
+    - context.messageId
+    - context.action
+    - context.domain
+    - message.order.id
+    - message.order.status
