@@ -27,9 +27,33 @@ this stack is participant records and lookup only.
 
 ## Prerequisites
 
-- Docker and Docker Compose
-- Around 4 GB free RAM (Elasticsearch and Keycloak are the heavy parts)
-- `python3` on the host, used by `smoke-test.sh` to read JSON responses
+Nothing beyond Docker is installed on the host - every service runs in a container. What the
+host does have to provide:
+
+- **Docker and Docker Compose.**
+- **About 3 GB of memory available to Docker**, measured on a running stack: Elasticsearch
+  ~840 MB resident (512 MB heap plus JVM overhead), Keycloak ~700 MB, the registry ~700 MB,
+  postgres ~75 MB. On Linux this is just free RAM. On Docker Desktop (macOS, Windows) it is
+  the VM's memory limit, whose default of 2 GB is *not* enough - raise it in Settings ->
+  Resources. A container killed for memory shows as `Exited (137)`.
+- **`vm.max_map_count` at least 262144**, which Elasticsearch needs for its memory-mapped
+  index files. Recent Linux kernels already default to 1048576, but WSL2 and older kernels
+  default to 65530, where Elasticsearch dies at startup with `max virtual memory areas
+  vm.max_map_count [65530] is too low`. Check and fix:
+
+  ```bash
+  cat /proc/sys/vm/max_map_count            # want >= 262144
+  sudo sysctl -w vm.max_map_count=262144    # this boot only
+  echo 'vm.max_map_count=262144' | sudo tee /etc/sysctl.d/99-elasticsearch.conf   # persist
+  ```
+
+- **An x86_64 host, or emulation.** `sunbird-rc-core` and `sunbird-rc-keycloak` are published
+  for `linux/amd64` only, with no arm64 build. On Apple Silicon they run under emulation and
+  are slow; if Rosetta is off they fail to start outright.
+- **Ports 8081, 8080, 9990, 5432 and 9200 free.** Something else already listening on one of
+  them - a local postgres on 5432 is the usual case - makes compose fail with `port is already
+  allocated`. Every port is overridable in `.env` (`DB_HOST_PORT`, `ES_HOST_PORT`, ...).
+- **`python3`**, used by `smoke-test.sh` to read JSON responses.
 
 ## Bring it up
 
@@ -216,6 +240,36 @@ Changing the schema means restarting the registry:
 ```bash
 docker compose restart registry
 ```
+
+## Troubleshooting a failed bring-up
+
+The registry's `/health` reports Elasticsearch as one of its checks, so a failing
+Elasticsearch shows up twice: as an unhealthy `es` container *and* as the registry reporting
+`false`. Fix Elasticsearch first, and the registry follows.
+
+Start here - it names the cause in almost every case:
+
+```bash
+docker compose ps                  # which container is unhealthy, and its exit code
+docker compose logs es | tail -40  # the real error
+cat /proc/sys/vm/max_map_count     # want >= 262144
+docker info | grep -i "total memory"
+```
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `es` exits, log says `vm.max_map_count [65530] is too low` | Host kernel limit too low, common on WSL2 | `sudo sysctl -w vm.max_map_count=262144` |
+| `es` or `registry` shows `Exited (137)` | Out of memory - the container was killed | Raise Docker's memory limit to 4 GB |
+| `port is already allocated` | Something already owns 5432, 8080 or 9200 | Change the matching `*_HOST_PORT` in `.env` |
+| `error while loading shared libraries`, or the container never starts, on Apple Silicon | amd64-only image with no emulation | Enable Rosetta in Docker Desktop |
+| Compose refuses to start, naming a variable | A required value in `.env` is empty | Fill it in; `KEYCLOAK_SECRET` comes from step 3 above |
+| `registry` is up but every write returns 401 | `KEYCLOAK_SECRET` does not match the `admin-api` client | Regenerate the secret and restart the registry |
+| `es` is green but `/search` returns nothing | The index was lost, or the write has not been indexed yet | See the eventual-consistency note above; `docker compose down` without `-v` keeps the index |
+| `could not create unique index ... participant_id` in the registry log | Leftover duplicate rows in `db-data/` from an earlier schema | `docker compose down && sudo rm -rf db-data/` |
+
+Verified: a fresh clone of this repository, with `.env` filled in from `.env.example`, brings
+postgres and Elasticsearch to healthy in about 40 seconds on Linux. If it fails on your host,
+it is one of the rows above rather than something missing from the repository.
 
 ## Reset
 
