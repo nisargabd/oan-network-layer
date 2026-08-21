@@ -155,7 +155,7 @@ modules:
           id: simplekeymanager
           config:
             subscriberId: bap.example.com
-            keyId: 1-e7217526-ecc5-4d29-9e47-f9f21f4e1138
+            keyId: 1-7fab0128-9a3b-4fad-9c36-3933de861801
             signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
             signingPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
             encrPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=

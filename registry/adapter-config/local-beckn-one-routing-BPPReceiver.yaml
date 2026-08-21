@@ -19,7 +19,7 @@ routingRules:
     version: "2.0.0"
     targetType: "url"
     target:
-      url: "https://test-endpoint.free.beeceptor.com"
+      url: "https://beckn-onix.free.beeceptor.com"
     endpoints:
       - discover
       - select

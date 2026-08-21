@@ -1,6 +1,9 @@
 # OAN Registry - local dev stack.
-# Registry (Sunbird RC core) + its dependencies: postgres, keycloak, elasticsearch,
+# Registry (Sunbird RC core) + its dependencies: postgres and keycloak,
 # plus the protocol adapters for the Experience and Network layers.
+#
+# There is no Elasticsearch here. `/search` is served from postgres by
+# NativeSearchService - see the registry service below.
 #
 # The Provider-layer adapter is deliberately not here yet.
 #
@@ -23,26 +26,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  es:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.13
-    # named volume, not a bind mount: without it the search index is lost on every
-    # `docker compose down`, and /search then returns nothing for records postgres
-    # still holds - the registry does not reindex on start
-    volumes:
-      - esdata:/usr/share/elasticsearch/data
-    environment:
-      - discovery.type=single-node
-      - 'ES_JAVA_OPTS=-Xms512m -Xmx512m'
-      - xpack.security.enabled=${ELASTIC_SECURITY_ENABLED-false}
-      - ELASTIC_PASSWORD=${ELASTIC_SEARCH_PASSWORD-}
-    ports:
-      - '${ES_HOST_PORT-9200}:9200'
-    healthcheck:
-      test: ['CMD-SHELL', 'curl -f http://localhost:9200/_cluster/health || exit 1']
-      interval: 30s
-      timeout: 10s
-      retries: 10
 
   keycloak:
     image: ghcr.io/sunbird-rc/sunbird-rc-keycloak:latest
@@ -81,14 +64,10 @@ services:
       - connectionInfo_uri=jdbc:postgresql://db:5432/${POSTGRES_DB-registry}
       - connectionInfo_username=${POSTGRES_USER-postgres}
       - connectionInfo_password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      # search goes through elasticsearch so the `contains` / `eq` filters in the
-      # API specification behave as documented
-      - search_providerName=${SEARCH_PROVIDER_NAME-dev.sunbirdrc.registry.service.ElasticSearchService}
-      - elastic_search_connection_url=es:9200
-      - elastic_search_scheme=http
-      - elastic_search_auth_enabled=${ELASTIC_SECURITY_ENABLED-false}
-      - elastic_search_username=${ELASTIC_SEARCH_USERNAME-elastic}
-      - elastic_search_password=${ELASTIC_SEARCH_PASSWORD-}
+      # `/search` reads the same postgres the writes go to, so it is immediately
+      # consistent. Every filter operator works except `queryString`, which the
+      # native provider rejects with "free-text queries not supported".
+      - search_providerName=${SEARCH_PROVIDER_NAME-dev.sunbirdrc.registry.service.NativeSearchService}
       # keycloak / auth - role checks on Participant only apply while this is true
       - authentication_enabled=${AUTHENTICATION_ENABLED-true}
       - sunbird_sso_realm=${KEYCLOAK_REALM-sunbird-rc}
@@ -124,8 +103,6 @@ services:
       - '${REGISTRY_HOST_PORT-8081}:8081'
     depends_on:
       db:
-        condition: service_healthy
-      es:
         condition: service_healthy
       keycloak:
         condition: service_healthy
@@ -206,7 +183,3 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-
-
-volumes:
-  esdata:
